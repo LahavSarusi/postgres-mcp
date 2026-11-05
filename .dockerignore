@@ -1,0 +1,9 @@
+# Keep secrets, local notes and local tooling out of the image.
+.env
+.env.*
+descriptions.json
+.venv/
+.git/
+**/__pycache__/
+.mypy_cache/
+.ruff_cache/

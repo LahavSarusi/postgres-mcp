@@ -1,0 +1,104 @@
+"""ask.py with the schema, LLM and database replaced by stubs."""
+
+from typing import Any
+
+import pytest
+
+from postgres_mcp import ask as ask_module
+from postgres_mcp.ask import AskResult, ask
+from postgres_mcp.llm import ChatMessage, LlmError
+from postgres_mcp.output import run
+
+
+class Stubs:
+    def __init__(self, sql_replies: list[str | Exception], run_results: list[Any]) -> None:
+        self.sql_replies = sql_replies
+        self.run_results = run_results
+        self.llm_calls: list[list[ChatMessage]] = []
+        self.ran: list[str] = []
+
+    async def describe_schema(self) -> str:
+        return "t(a integer)"
+
+    async def generate_sql(self, messages: list[ChatMessage]) -> str:
+        self.llm_calls.append([dict(m) for m in messages])  # type: ignore[misc]
+        reply = self.sql_replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    async def run_read_only(self, sql: str) -> list[dict[str, Any]]:
+        self.ran.append(sql)
+        result = self.run_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return list(result)
+
+
+def install(monkeypatch: pytest.MonkeyPatch, stubs: Stubs) -> Stubs:
+    monkeypatch.setattr(ask_module, "describe_schema", stubs.describe_schema)
+    monkeypatch.setattr(ask_module, "generate_sql", stubs.generate_sql)
+    monkeypatch.setattr(ask_module, "run_read_only", stubs.run_read_only)
+    return stubs
+
+
+def test_first_query_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    stubs = install(monkeypatch, Stubs(["SELECT a FROM t"], [[{"a": 1}]]))
+    assert run(ask("how many?")) == AskResult(sql="SELECT a FROM t", rows=[{"a": 1}])
+    assert len(stubs.llm_calls) == 1
+    assert stubs.llm_calls[0][1]["content"] == "Schema:\nt(a integer)\n\nQuestion: how many?"
+    assert stubs.ran == ["SELECT a FROM t"]
+
+
+def test_rejected_query_is_corrected_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    stubs = install(
+        monkeypatch,
+        Stubs(
+            ["SELECT b FROM t", "SELECT a FROM t"],
+            [Exception('column "b" does not exist'), [{"a": 2}]],
+        ),
+    )
+    assert run(ask("q")) == AskResult(sql="SELECT a FROM t", rows=[{"a": 2}])
+    retry_messages = stubs.llm_calls[1]
+    assert retry_messages[-2:] == [
+        {"role": "assistant", "content": "SELECT b FROM t"},
+        {
+            "role": "user",
+            "content": 'PostgreSQL rejected that query: column "b" does not exist\n'
+            "Return a corrected query.",
+        },
+    ]
+    assert retry_messages[:2] == stubs.llm_calls[0]
+    assert stubs.ran == ["SELECT b FROM t", "SELECT a FROM t"]
+
+
+def test_second_failure_is_raised_without_a_third_try(monkeypatch: pytest.MonkeyPatch) -> None:
+    stubs = install(
+        monkeypatch,
+        Stubs(["bad 1", "bad 2", "never"], [Exception("first"), Exception("second")]),
+    )
+    with pytest.raises(Exception, match=r"^second$"):
+        run(ask("q"))
+    assert len(stubs.llm_calls) == 2
+    assert stubs.ran == ["bad 1", "bad 2"]
+
+
+def test_error_without_message_uses_its_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    stubs = install(monkeypatch, Stubs(["x", "y"], [TimeoutError(), []]))
+    run(ask("q"))
+    assert stubs.llm_calls[1][-1]["content"].startswith(
+        "PostgreSQL rejected that query: TimeoutError\n"
+    )
+
+
+def test_llm_failure_is_raised_before_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    stubs = install(monkeypatch, Stubs([LlmError("LLM returned no SQL")], []))
+    with pytest.raises(LlmError, match="LLM returned no SQL"):
+        run(ask("q"))
+    assert stubs.ran == []
+
+
+def test_llm_failure_on_retry_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, Stubs(["bad", LlmError("down")], [Exception("rejected")]))
+    with pytest.raises(LlmError, match="down"):
+        run(ask("q"))
