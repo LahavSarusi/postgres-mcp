@@ -201,14 +201,26 @@ Many clients take it in this JSON form:
 - **`query`** — `sql` (string): runs one SELECT under the same read-only rules and
   returns the rows as a JSON array.
 
-A failed query or LLM call is returned as a tool error with the reason, for example
-`syntax error at or near "DELETE"` or `LLM request failed (401): ...`.
+- **Read-only marking:** both tools are marked read-only, so clients that support tool
+  annotations can run them without asking each time. `ask` is also marked as reaching
+  outside the database, because it calls the LLM.
+- **Errors:** a failed query or LLM call is returned as a tool error with the reason, for
+  example `syntax error at or near "DELETE"` or `LLM request failed (401): ...`. A blank
+  argument gives `sql must be a non-empty string` (or `question ...`). A missing or
+  non-string argument is rejected against the tool's input schema.
+- **Instructions:** on connecting, the server tells the client's model when to use each
+  tool, and that the table schemas are available as resources.
 
 ### Resources
 
 - **Table schemas** (`postgres://<host>:<port>/<table>/schema`): the column names and
-  types of each table in the `public` schema. The URIs never contain the user or password.
-  Asking for a table that doesn't exist returns a `Table "<name>" not found` error.
+  types of each table and view in the `public` schema, as JSON. The URIs never contain
+  the user or password.
+- **Listing:** every table is listed as its own resource, sorted by name. The same URI
+  is also offered as a resource template (`.../{table}/schema`), for clients that fill in
+  the table name themselves.
+- **Errors:** a table that doesn't exist returns `Table "<name>" not found`. A URI of any
+  other form returns `Unknown resource: <uri>`.
 
 ### Docker
 
@@ -254,6 +266,7 @@ docker run -i --rm --env-file .env postgres-mcp-python
 | `... must be a positive whole number` | Fix `MAX_ROWS` or `QUERY_TIMEOUT_MS`. |
 | `canceling statement due to statement timeout` | The query ran longer than `QUERY_TIMEOUT_MS`. |
 | New tables or columns are not used | The MCP server reads the schema once; restart your MCP client. |
+| `Unknown resource: ...` | The URI is not `postgres://<host>:<port>/<table>/schema`, or its host and port differ from the server's. Take URIs from the resource list. |
 | VS Code: `Package ... is not installed` | Select `.venv` with **Python: Select Interpreter**. |
 
 ## Known limitations
@@ -325,7 +338,7 @@ The other entry points use parts of this path:
 | `src/postgres_mcp/init_descriptions.py` | `postgres-mcp-descriptions-init`: writes the starter file |
 | `src/postgres_mcp/llm.py` | Calls the model API and extracts the SQL from its reply |
 | `src/postgres_mcp/ask.py` | Question → SQL → rows, with one correction retry |
-| `src/postgres_mcp/server.py` | MCP server |
+| `src/postgres_mcp/server.py` | MCP server: the tools and resources, built on the MCP SDK's `MCPServer` (formerly FastMCP) |
 | `src/postgres_mcp/__main__.py` | `python -m postgres_mcp` starts the MCP server |
 | `src/postgres_mcp/cli.py` | Command line |
 | `src/postgres_mcp/output.py` | JSON output, error text, and the event loop setup |
@@ -381,5 +394,5 @@ With neither available, those tests are skipped and the reason is shown.
 | `test_ask_unit.py`, `test_ask_db.py` | Question → SQL → rows, and the single correction retry |
 | `test_cli.py` | `postgres-mcp-ask` as a program: output streams, exit codes |
 | `test_init_descriptions.py` | `postgres-mcp-descriptions-init`: the starter file, never overwriting |
-| `test_server.py` | Every MCP handler, and the server over stdio as a client sees it |
+| `test_server.py` | Tools, resources, annotations and errors through an in-process MCP client, and the server over stdio as a real client sees it |
 | `test_image.py` | The Docker image (with `--run-image`) |
