@@ -14,6 +14,8 @@ ASK = "postgres-mcp-ask"
 
 
 def test_ctrl_c_exits_130(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl+C exits with code 130, the shell convention for SIGINT."""
+
     def interrupted(coroutine: Coroutine[Any, Any, Any]) -> None:
         coroutine.close()
         raise KeyboardInterrupt
@@ -27,6 +29,9 @@ def test_ctrl_c_exits_130(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_rows_on_stdout_sql_on_stderr(pg: Database, llm: MockLlm) -> None:
+    """Rows go to stdout as indented JSON and the SQL to stderr, both UTF-8 with LF line ends; the
+    arguments form one question.
+    """
     llm.script("SELECT name, city FROM customers ORDER BY id")
     result = run_script([script_path(ASK), "מי", "הלקוחות?"])
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
@@ -43,6 +48,7 @@ def test_rows_on_stdout_sql_on_stderr(pg: Database, llm: MockLlm) -> None:
 
 
 def test_retry_shows_the_corrected_sql(pg: Database, llm: MockLlm) -> None:
+    """After a retry, stderr shows only the corrected SQL."""
     llm.script("SELECT nam FROM customers", "SELECT count(*)::int AS n FROM customers")
     result = run_script([script_path(ASK), "how many"])
     assert result.returncode == 0
@@ -51,6 +57,7 @@ def test_retry_shows_the_corrected_sql(pg: Database, llm: MockLlm) -> None:
 
 
 def test_usage_without_a_question() -> None:
+    """No question, or only blank arguments, prints the usage line and exits with code 1."""
     for args in ([], ["   "], ["", ""]):
         result = run_script([script_path(ASK), *args])
         assert result.returncode == 1
@@ -59,6 +66,7 @@ def test_usage_without_a_question() -> None:
 
 
 def test_error_goes_to_stderr_with_exit_code_1(pg: Database, llm: MockLlm) -> None:
+    """An LLM failure is printed to stderr and exits with code 1, with nothing on stdout."""
     llm.script(Reply(status=500, raw=b"model overloaded"))
     result = run_script([script_path(ASK), "q"])
     assert result.returncode == 1
@@ -67,6 +75,7 @@ def test_error_goes_to_stderr_with_exit_code_1(pg: Database, llm: MockLlm) -> No
 
 
 def test_missing_database_settings(llm: MockLlm) -> None:
+    """Without PG* settings it exits with code 1 before calling the LLM."""
     result = run_script([script_path(ASK), "q"])
     assert result.returncode == 1
     assert result.stderr.decode().startswith(
@@ -76,12 +85,14 @@ def test_missing_database_settings(llm: MockLlm) -> None:
 
 
 def test_missing_llm_settings(pg: Database) -> None:
+    """A missing LLM setting is named, and it exits with code 1."""
     result = run_script([script_path(ASK), "q"], {"LLM_MODEL": ""})
     assert result.returncode == 1
     assert result.stderr.decode().startswith("Missing LLM settings: LLM_MODEL.")
 
 
 def test_invalid_limit_setting() -> None:
+    """An invalid MAX_ROWS exits with code 1 and a message naming it."""
     result = run_script([script_path(ASK), "q"], {"MAX_ROWS": "lots"})
     assert result.returncode == 1
     assert result.stderr.decode().strip() == 'MAX_ROWS must be a positive whole number, got "lots".'

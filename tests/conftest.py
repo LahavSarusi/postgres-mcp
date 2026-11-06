@@ -137,6 +137,7 @@ class Database:
 
     @property
     def url(self) -> str:
+        """The database as a postgresql:// URL, with user and password percent-encoded."""
         return (
             f"postgresql://{quote(self.user, safe='')}:{quote(self.password, safe='')}"
             f"@{self.host}:{self.port}/{quote(self.dbname, safe='')}"
@@ -144,6 +145,7 @@ class Database:
 
     @property
     def env(self) -> dict[str, str]:
+        """The PG* variables that point libpq at the database."""
         return {
             "PGHOST": self.host,
             "PGPORT": self.port,
@@ -168,6 +170,7 @@ def direct_connect(url: str, **options: Any) -> psycopg.Connection[tuple[Any, ..
 
 
 def _wait_for(url: str, seconds: float) -> None:
+    """Retries connecting to `url` until it works or `seconds` have passed."""
     deadline = time.monotonic() + seconds
     while True:
         try:
@@ -266,10 +269,17 @@ class Reply:
 
 
 def sql_reply(sql: str) -> Reply:
+    """A reply whose message content is `sql`."""
     return Reply(content=sql)
 
 
 class MockLlm:
+    """A local OpenAI-compatible chat-completions server with scripted replies.
+
+    Each POST is recorded in `requests` and answered with the next reply in `replies`; when none are
+    left it answers 500 "no reply".
+    """
+
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self.replies: list[Reply] = []
@@ -311,9 +321,11 @@ class MockLlm:
 
     @property
     def base_url(self) -> str:
+        """The URL to use as LLM_BASE_URL."""
         return f"http://127.0.0.1:{self.server.server_address[1]}/v1"
 
     def script(self, *replies: Reply | str) -> None:
+        """Queues replies for the next requests; a string becomes an SQL reply."""
         self.replies = [sql_reply(r) if isinstance(r, str) else r for r in replies]
 
     @property
@@ -324,6 +336,7 @@ class MockLlm:
 
 @pytest.fixture(scope="session")
 def llm_server() -> Iterator[MockLlm]:
+    """One mock LLM server for the whole session."""
     mock = MockLlm()
     yield mock
     mock.server.shutdown()
@@ -361,12 +374,14 @@ def run_script(
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+    """Adds --run-image, which turns on the slow Docker image tests."""
     parser.addoption(
         "--run-image", action="store_true", help="also build and test the Docker image"
     )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skips tests marked `image` unless --run-image is given."""
     if config.getoption("--run-image"):
         return
     skip = pytest.mark.skip(reason="Docker image test; enable with --run-image")

@@ -11,6 +11,12 @@ from postgres_mcp.output import run
 
 
 class Stubs:
+    """Stand-ins for describe_schema, generate_sql and run_read_only.
+
+    They hand out the queued replies and results in order, raising any that are exceptions, and
+    record what they were called with.
+    """
+
     def __init__(self, sql_replies: list[str | Exception], run_results: list[Any]) -> None:
         self.sql_replies = sql_replies
         self.run_results = run_results
@@ -36,6 +42,7 @@ class Stubs:
 
 
 def install(monkeypatch: pytest.MonkeyPatch, stubs: Stubs) -> Stubs:
+    """Puts the stubs in place of the functions ask.py calls."""
     monkeypatch.setattr(ask_module, "describe_schema", stubs.describe_schema)
     monkeypatch.setattr(ask_module, "generate_sql", stubs.generate_sql)
     monkeypatch.setattr(ask_module, "run_read_only", stubs.run_read_only)
@@ -43,6 +50,7 @@ def install(monkeypatch: pytest.MonkeyPatch, stubs: Stubs) -> Stubs:
 
 
 def test_first_query_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the first query runs, its SQL and rows are returned after one LLM call."""
     stubs = install(monkeypatch, Stubs(["SELECT a FROM t"], [[{"a": 1}]]))
     assert run(ask("how many?")) == AskResult(sql="SELECT a FROM t", rows=[{"a": 1}])
     assert len(stubs.llm_calls) == 1
@@ -51,6 +59,9 @@ def test_first_query_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_rejected_query_is_corrected_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rejected query goes back to the LLM as an assistant message plus the error, after the
+    original messages, and the fix runs.
+    """
     stubs = install(
         monkeypatch,
         Stubs(
@@ -73,6 +84,7 @@ def test_rejected_query_is_corrected_once(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_second_failure_is_raised_without_a_third_try(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second failure is raised as is; the LLM is not asked a third time."""
     stubs = install(
         monkeypatch,
         Stubs(["bad 1", "bad 2", "never"], [Exception("first"), Exception("second")]),
@@ -84,6 +96,7 @@ def test_second_failure_is_raised_without_a_third_try(monkeypatch: pytest.Monkey
 
 
 def test_error_without_message_uses_its_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An error with no message is reported to the LLM by its type name."""
     stubs = install(monkeypatch, Stubs(["x", "y"], [TimeoutError(), []]))
     run(ask("q"))
     assert stubs.llm_calls[1][-1]["content"].startswith(
@@ -92,6 +105,7 @@ def test_error_without_message_uses_its_type(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_llm_failure_is_raised_before_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An LLM error on the first call is raised, and nothing runs on the database."""
     stubs = install(monkeypatch, Stubs([LlmError("LLM returned no SQL")], []))
     with pytest.raises(LlmError, match="LLM returned no SQL"):
         run(ask("q"))
@@ -99,6 +113,7 @@ def test_llm_failure_is_raised_before_running(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_llm_failure_on_retry_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An LLM error while asking for the correction is raised."""
     install(monkeypatch, Stubs(["bad", LlmError("down")], [Exception("rejected")]))
     with pytest.raises(LlmError, match="down"):
         run(ask("q"))

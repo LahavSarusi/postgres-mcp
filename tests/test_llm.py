@@ -31,10 +31,14 @@ from postgres_mcp.output import run
     ],
 )
 def test_extract_sql(reply: str, sql: str) -> None:
+    """The SQL is the reply without <think> blocks, markdown fences or outer whitespace."""
     assert extract_sql(reply) == sql
 
 
 def test_start_conversation() -> None:
+    """A conversation starts with the system prompt and a user message holding the schema and the
+    question.
+    """
     assert start_conversation("כמה לקוחות?", "t(a int)") == [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": "Schema:\nt(a int)\n\nQuestion: כמה לקוחות?"},
@@ -42,11 +46,15 @@ def test_start_conversation() -> None:
 
 
 def test_system_prompt_rules() -> None:
+    """The system prompt states the task and asks for bare SQL."""
     assert SYSTEM_PROMPT.startswith("You translate questions about a PostgreSQL database")
     assert "Return only the SQL. No explanation, no markdown fences." in SYSTEM_PROMPT
 
 
 def test_generate_sql_request_and_reply(llm: MockLlm) -> None:
+    """generate_sql posts the model, messages and temperature 0 with the bearer key, and returns the
+    cleaned SQL.
+    """
     llm.script(Reply(content="<think>x</think>```sql\nSELECT 1;\n```"))
     messages = start_conversation("q", "s")
     assert run(generate_sql(messages)) == "SELECT 1;"
@@ -59,6 +67,7 @@ def test_generate_sql_request_and_reply(llm: MockLlm) -> None:
 
 
 def test_base_url_trailing_slash(llm: MockLlm, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A trailing slash on LLM_BASE_URL does not double the slash in the request path."""
     monkeypatch.setenv("LLM_BASE_URL", llm.base_url + "/")
     llm.script("SELECT 1")
     run(generate_sql(start_conversation("q", "s")))
@@ -66,6 +75,7 @@ def test_base_url_trailing_slash(llm: MockLlm, monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_follows_redirects(llm: MockLlm) -> None:
+    """Redirects from the LLM server are followed."""
     llm.script(
         Reply(status=307, raw=b"", headers={"Location": "/v1/chat/completions"}),
         "SELECT 2",
@@ -76,6 +86,7 @@ def test_follows_redirects(llm: MockLlm) -> None:
 
 @pytest.mark.parametrize("status", [400, 401, 404, 429, 500, 503])
 def test_http_error_status(llm: MockLlm, status: int) -> None:
+    """An error status raises LlmError with the status and the first 500 characters of the body."""
     llm.script(Reply(status=status, raw=b"x" * 900))
     with pytest.raises(LlmError) as error:
         run(generate_sql(start_conversation("q", "s")))
@@ -83,6 +94,7 @@ def test_http_error_status(llm: MockLlm, status: int) -> None:
 
 
 def test_reply_not_json(llm: MockLlm) -> None:
+    """A reply that is not JSON raises LlmError quoting it."""
     llm.script(Reply(raw=b"<html>gateway</html>"))
     with pytest.raises(LlmError) as error:
         run(generate_sql(start_conversation("q", "s")))
@@ -107,6 +119,9 @@ def test_reply_not_json(llm: MockLlm) -> None:
     ],
 )
 def test_reply_without_content(llm: MockLlm, raw: bytes) -> None:
+    """A reply without a non-empty string at choices[0].message.content raises "LLM returned no
+    content".
+    """
     llm.script(Reply(raw=raw))
     with pytest.raises(LlmError, match=r"^LLM returned no content$"):
         run(generate_sql(start_conversation("q", "s")))
@@ -114,12 +129,14 @@ def test_reply_without_content(llm: MockLlm, raw: bytes) -> None:
 
 @pytest.mark.parametrize("content", ["<think>hmm</think>", "```sql\n```", "   "])
 def test_reply_without_sql(llm: MockLlm, content: str) -> None:
+    """Content with no SQL left once cleaned raises "LLM returned no SQL"."""
     llm.script(Reply(content=content))
     with pytest.raises(LlmError, match=r"^LLM returned no SQL$"):
         run(generate_sql(start_conversation("q", "s")))
 
 
 def test_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A closed port raises LlmError naming the URL and the cause."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -133,6 +150,7 @@ def test_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_timeout(llm: MockLlm, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reply slower than REQUEST_TIMEOUT_S raises LlmError saying so."""
     monkeypatch.setattr(llm_module, "REQUEST_TIMEOUT_S", 0.5)
     llm.script(Reply(content="SELECT 1", delay=3))
     with pytest.raises(LlmError) as error:
@@ -145,6 +163,7 @@ def test_timeout(llm: MockLlm, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_missing_settings_fail_before_any_request(
     llm: MockLlm, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A missing LLM setting fails before any request is sent."""
     monkeypatch.setenv("LLM_API_KEY", "")
     with pytest.raises(RuntimeError, match=r"^Missing LLM settings: LLM_API_KEY"):
         run(generate_sql(start_conversation("q", "s")))
@@ -152,4 +171,5 @@ def test_missing_settings_fail_before_any_request(
 
 
 def test_llm_error_is_a_runtime_error() -> None:
+    """LlmError is a RuntimeError."""
     assert issubclass(LlmError, RuntimeError)

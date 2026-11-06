@@ -30,6 +30,7 @@ from postgres_mcp.schema import (
     ],
 )
 def test_ident(name: str, expected: str) -> None:
+    """Lowercase names stay bare; any other name is double-quoted, with inner quotes doubled."""
     assert ident(name) == expected
 
 
@@ -43,10 +44,12 @@ def test_ident(name: str, expected: str) -> None:
     ],
 )
 def test_table_ref(schema_name: str, table: str, expected: str) -> None:
+    """Tables in public are named alone; others as schema.table, each part quoted as needed."""
     assert table_ref(schema_name, table) == expected
 
 
 def test_one_line() -> None:
+    """_one_line turns every run of whitespace into one space and trims the ends."""
     assert _one_line("  a\n b\t\tc  \r\n") == "a b c"
 
 
@@ -69,6 +72,7 @@ TABLES = [
 
 
 def test_render_without_notes() -> None:
+    """Each table is one line, name(column type keys, ...), with identifiers quoted as needed."""
     assert render_schema(TABLES, {}) == (
         'customers(id integer PK, status character, "City" text)\n'
         "sales.orders(id bigint PK, customer_id integer → customers.id, "
@@ -77,6 +81,11 @@ def test_render_without_notes() -> None:
 
 
 def test_render_with_notes_in_column_order() -> None:
+    """Notes follow their table line as `-- ` comments flattened to one line, columns in table
+    order.
+
+    Blank notes and notes for unknown columns are left out.
+    """
     notes = {
         "customers": {
             "description": "People\nwho   buy. Hebrew: לקוחות",
@@ -95,10 +104,12 @@ def test_render_with_notes_in_column_order() -> None:
 
 
 def test_render_empty() -> None:
+    """No tables give an empty string, whatever the notes."""
     assert render_schema([], {"t": {"description": "x"}}) == ""
 
 
 def test_unmatched_descriptions() -> None:
+    """Notes for tables or columns that do not exist are listed, in the file's order."""
     notes = {
         "customers": {"columns": {"status": "x", "nope": "y"}},
         "orders": {"description": "public.orders does not exist"},
@@ -113,4 +124,5 @@ def test_unmatched_descriptions() -> None:
 
 
 def test_unmatched_descriptions_none() -> None:
+    """When every note matches, nothing is listed."""
     assert unmatched_descriptions(TABLES, {"customers": {"columns": {"City": "c"}}}) == []

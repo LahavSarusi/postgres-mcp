@@ -9,6 +9,9 @@ from postgres_mcp.output import run
 
 
 def test_question_to_rows(connected: Database, llm: MockLlm) -> None:
+    """A Hebrew question becomes SQL from the LLM and rows from the database; the prompt holds the
+    system message, the schema and the question.
+    """
     llm.script("SELECT name FROM customers WHERE city = 'חיפה'")
     result = run(ask("מי הלקוחות מחיפה?"))
     assert result.sql == "SELECT name FROM customers WHERE city = 'חיפה'"
@@ -23,6 +26,9 @@ def test_question_to_rows(connected: Database, llm: MockLlm) -> None:
 
 
 def test_postgres_error_goes_back_to_the_llm(connected: Database, llm: MockLlm) -> None:
+    """When PostgreSQL rejects the query, the LLM gets its query and the error back, and the
+    corrected query's rows are returned.
+    """
     llm.script("SELECT nam FROM customers", "SELECT name FROM customers ORDER BY id LIMIT 1")
     result = run(ask("first customer"))
     assert result.rows == [{"name": "דנה כהן"}]
@@ -35,11 +41,17 @@ def test_postgres_error_goes_back_to_the_llm(connected: Database, llm: MockLlm) 
 
 
 def test_write_attempt_is_refused_and_retried(connected: Database, llm: MockLlm) -> None:
+    """A DELETE from the LLM is refused by the database, the retried SELECT runs, and no rows are
+    deleted.
+    """
     llm.script("DELETE FROM customers", "SELECT count(*)::int AS n FROM customers")
     assert run(ask("delete everyone")).rows == [{"n": 3}]
 
 
 def test_retry_failure_is_raised(connected: Database, llm: MockLlm) -> None:
+    """If the corrected query fails too, its database error is raised after exactly two LLM
+    requests.
+    """
     llm.script("SELECT nam FROM customers", "SELECT still_wrong FROM customers")
     with pytest.raises(psycopg.errors.UndefinedColumn, match="still_wrong"):
         run(ask("q"))

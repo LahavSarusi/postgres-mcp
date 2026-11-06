@@ -23,6 +23,7 @@ IMAGE = "postgres-mcp-python:pytest"
 
 @pytest.fixture(scope="module")
 def image() -> Iterator[str]:
+    """Builds the image once for this module and removes it afterwards."""
     if not shutil.which("docker"):
         pytest.skip("Docker is not installed")
     subprocess.run(
@@ -34,6 +35,7 @@ def image() -> Iterator[str]:
 
 
 def sh(image: str, command: str) -> str:
+    """Runs a shell command in a new container from `image` and returns its output."""
     return subprocess.run(
         ["docker", "run", "--rm", "--entrypoint", "sh", image, "-c", command],
         check=True, capture_output=True, text=True, timeout=120,
@@ -41,12 +43,18 @@ def sh(image: str, command: str) -> str:
 
 
 def test_image_has_no_secrets_and_runs_as_non_root(image: str) -> None:
+    """/app holds only the package and its metadata (no .env), the user is uid 1000, and the server
+    command is installed.
+    """
     assert sh(image, "ls -A /app").split() == ["README.md", "pyproject.toml", "src"]
     assert sh(image, "id -u") == "1000"
     assert sh(image, "command -v postgres-mcp-server") != ""
 
 
 def test_image_serves_mcp(image: str, database: Database) -> None:
+    """The container serves MCP over stdio: query reads the test database, and ask fails cleanly
+    with no LLM configured.
+    """
     if database.container is None:
         pytest.skip("needs the Docker-started test database (TEST_DATABASE_URL is set)")
 

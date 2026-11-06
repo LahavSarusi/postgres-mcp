@@ -12,10 +12,12 @@ from postgres_mcp.schema import Column, Table, describe_schema, read_schema
 
 
 def tables_by_key(tables: list[Table]) -> dict[str, Table]:
+    """The tables keyed by schema.name."""
     return {f"{t.schema}.{t.name}": t for t in tables}
 
 
 def test_reads_every_user_table_and_view(connected: Database) -> None:
+    """read_schema returns every table and view in user schemas, and no system ones."""
     tables = tables_by_key(run(read_schema()))
     assert sorted(tables) == [
         "public.Mixed Case",
@@ -28,6 +30,7 @@ def test_reads_every_user_table_and_view(connected: Database) -> None:
 
 
 def test_columns_in_table_order_with_types(connected: Database) -> None:
+    """Columns come in table order, with their types and PK marks."""
     customers = tables_by_key(run(read_schema()))["public.customers"]
     assert customers.columns == [
         Column("id", "integer", ["PK"]),
@@ -38,6 +41,9 @@ def test_columns_in_table_order_with_types(connected: Database) -> None:
 
 
 def test_foreign_keys_and_composite_primary_keys(connected: Database) -> None:
+    """Foreign keys are marked with their target, and every column of a composite primary key is
+    marked PK.
+    """
     tables = tables_by_key(run(read_schema()))
     orders = {c.name: c for c in tables["sales.orders"].columns}
     assert orders["customer_id"].keys == ["→ customers.id"]
@@ -51,12 +57,14 @@ def test_foreign_keys_and_composite_primary_keys(connected: Database) -> None:
 
 
 def test_views_have_no_keys(connected: Database) -> None:
+    """Views list their columns without key marks."""
     view = tables_by_key(run(read_schema()))["public.active_customers"]
     assert [c.name for c in view.columns] == ["id", "name", "city", "status"]
     assert all(c.keys == [] for c in view.columns)
 
 
 def test_describe_schema_text(connected: Database) -> None:
+    """describe_schema renders the catalog as text, one line per table."""
     lines = run(describe_schema()).splitlines()
     assert "customers(id integer PK, name text, city text, status character)" in lines
     assert '"Mixed Case"(k integer PK, v text)' in lines
@@ -68,6 +76,9 @@ def test_describe_schema_text(connected: Database) -> None:
 def test_describe_schema_adds_notes_and_warns_about_unknown_ones(
     connected: Database, isolated: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Notes from descriptions.json are added; notes for missing tables or columns are dropped with
+    a warning on stderr.
+    """
     isolated.write_text(
         '{"customers": {"description": "People. Hebrew: לקוחות",'
         ' "columns": {"status": "A = active", "nope": "x"}},'
@@ -90,6 +101,7 @@ def test_describe_schema_adds_notes_and_warns_about_unknown_ones(
 
 
 def test_describe_schema_is_cached(connected: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The description is built once, then served from the cache without touching the database."""
     first = run(describe_schema())
 
     async def no_database() -> None:
@@ -100,6 +112,7 @@ def test_describe_schema_is_cached(connected: Database, monkeypatch: pytest.Monk
 
 
 def test_malformed_descriptions_stop_describe_schema(connected: Database, isolated: Path) -> None:
+    """A malformed descriptions.json raises instead of being ignored."""
     isolated.write_text("[]", encoding="utf-8")
     with pytest.raises(DescriptionsError):
         run(describe_schema())

@@ -17,6 +17,7 @@ from postgres_mcp.output import run, to_json
 def test_connect_names_missing_settings(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """connect() without a URL names the missing PG* settings and exits with code 1."""
     monkeypatch.setenv("PGUSER", "u")
     monkeypatch.setenv("PGDATABASE", "d")
     with pytest.raises(SystemExit) as exit_info:
@@ -29,11 +30,13 @@ def test_connect_names_missing_settings(
 
 
 def test_connect_with_url_needs_no_pg_settings() -> None:
+    """With a URL, no PG* settings are needed and the URL is used as given."""
     db.connect("postgresql://u:p@h:1/d")
     assert db._conninfo == "postgresql://u:p@h:1/d"
 
 
 def test_connect_without_url_uses_libpq_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a URL, the connection string is empty, so libpq reads the PG* variables."""
     for name in ("PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE"):
         monkeypatch.setenv(name, "x")
     db.connect()
@@ -41,6 +44,7 @@ def test_connect_without_url_uses_libpq_environment(monkeypatch: pytest.MonkeyPa
 
 
 def test_connect_drops_empty_pg_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty PG* variables, which libpq would reject, are removed; set ones are kept."""
     monkeypatch.setenv("PGSSLMODE", "")
     monkeypatch.setenv("PGPORT", "")
     monkeypatch.setenv("PGAPPNAME", "kept")
@@ -51,22 +55,26 @@ def test_connect_drops_empty_pg_variables(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_default_connect_timeout() -> None:
+    """When nothing sets a connect timeout, the default is used."""
     db.connect("postgresql://h/d")
     assert db._connect_options == {"connect_timeout": db.DEFAULT_CONNECT_TIMEOUT_S}
 
 
 def test_connect_timeout_from_environment_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PGCONNECT_TIMEOUT in the environment replaces the default."""
     monkeypatch.setenv("PGCONNECT_TIMEOUT", "3")
     db.connect("postgresql://h/d")
     assert db._connect_options == {}
 
 
 def test_connect_timeout_from_url_wins() -> None:
+    """connect_timeout in the URL replaces the default."""
     db.connect("postgresql://h/d?connect_timeout=3")
     assert db._connect_options == {}
 
 
 def test_invalid_url_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    """A URL libpq cannot parse exits with code 1 and "Invalid database URL"."""
     with pytest.raises(SystemExit) as exit_info:
         db.connect("postgresql://h/d?no_such_option=1")
     assert exit_info.value.code == 1
@@ -74,6 +82,7 @@ def test_invalid_url_exits(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_open_connection_before_connect() -> None:
+    """open_connection() before connect() raises RuntimeError."""
     with pytest.raises(RuntimeError, match=r"^connect\(\) must be called before"):
         run(db.open_connection())
 
@@ -82,18 +91,21 @@ def test_open_connection_before_connect() -> None:
 
 
 async def _rows(sql: str) -> list[db.Row]:
+    """Runs `sql` through run_read_only."""
     return await db.run_read_only(sql)
 
 
 def test_connects_with_pg_environment_and_empty_sslmode(
     pg: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Connects with the PG* variables, even with PGSSLMODE empty as in .env.example."""
     monkeypatch.setenv("PGSSLMODE", "")  # as written by .env.example
     db.connect()
     assert run(_rows("SELECT current_database() AS d")) == [{"d": pg.dbname}]
 
 
 def test_connects_with_url(pg: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Connects with a URL alone, the PG* variables empty."""
     for name in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"):
         monkeypatch.setenv(name, "")
     db.connect(pg.url)
@@ -101,6 +113,7 @@ def test_connects_with_url(pg: Database, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_wrong_password(pg: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wrong password raises PostgreSQL's authentication error."""
     monkeypatch.setenv("PGPASSWORD", "wrong")
     db.connect()
     with pytest.raises(psycopg.OperationalError, match="password authentication failed"):
@@ -108,6 +121,7 @@ def test_wrong_password(pg: Database, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_unreachable_server_times_out(pg: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server that cannot be reached fails within seconds instead of hanging."""
     monkeypatch.setenv("PGHOST", "127.0.0.1")
     monkeypatch.setenv("PGPORT", "1")
     monkeypatch.setenv("PGCONNECT_TIMEOUT", "2")
@@ -133,10 +147,12 @@ def test_unreachable_server_times_out(pg: Database, monkeypatch: pytest.MonkeyPa
     ],
 )
 def test_runs_selects(connected: Database, sql: str) -> None:
+    """SELECT and WITH queries run, with trailing semicolons, comments and whitespace allowed."""
     assert run(_rows(sql)) == [{"one": 1}]
 
 
 def test_semicolon_before_a_trailing_comment_is_not_stripped(connected: Database) -> None:
+    """A semicolon followed by a comment is not stripped, so the query fails."""
     # Known limitation, same as the TypeScript original: only a semicolon at the
     # very end is removed. Postgres rejects this; ask() sends the error to the
     # LLM, which then returns the query without it.
@@ -145,6 +161,7 @@ def test_semicolon_before_a_trailing_comment_is_not_stripped(connected: Database
 
 
 def test_percent_signs_and_placeholders_are_plain_text(connected: Database) -> None:
+    """% signs and %s-style placeholders in the SQL are plain text, not parameters."""
     rows = run(_rows("SELECT name FROM customers WHERE name LIKE '%100%' ORDER BY id"))
     assert rows == [{"name": "Ann 100%"}]
     rows = run(_rows("SELECT '%s %(x)s %%' AS t"))
@@ -152,6 +169,7 @@ def test_percent_signs_and_placeholders_are_plain_text(connected: Database) -> N
 
 
 def test_hebrew_and_quoted_identifiers(connected: Database) -> None:
+    """Hebrew text and quoted identifiers with spaces work in queries and in result column names."""
     rows = run(_rows("SELECT name FROM customers WHERE city = 'חיפה'"))
     assert rows == [{"name": "דנה כהן"}]
     rows = run(_rows('SELECT "Weird Col" FROM sales.orders WHERE id = 1'))
@@ -159,11 +177,15 @@ def test_hebrew_and_quoted_identifiers(connected: Database) -> None:
 
 
 def test_second_statement_breaks_the_subquery(connected: Database) -> None:
+    """A second statement is a syntax error, because the query is wrapped in a subquery."""
     with pytest.raises(psycopg.errors.SyntaxError):
         run(_rows("SELECT 1; DELETE FROM customers"))
 
 
 def test_escaping_the_subquery_hits_one_statement_rule(connected: Database) -> None:
+    """SQL that closes the subquery to add statements of its own is refused: only one statement may
+    be sent.
+    """
     escape = "SELECT 1) AS x; COMMIT; DELETE FROM customers; SELECT * FROM (SELECT 1"
     with pytest.raises(psycopg.Error, match="cannot insert multiple commands"):
         run(_rows(escape))
@@ -186,16 +208,21 @@ def test_escaping_the_subquery_hits_one_statement_rule(connected: Database) -> N
     ],
 )
 def test_writes_are_refused(connected: Database, sql: str) -> None:
+    """Writes, DDL, sequence changes, row locks, COMMIT and SET ROLE all fail, and the data is
+    unchanged.
+    """
     with pytest.raises(psycopg.Error):
         run(_rows(sql))
     assert run(_rows("SELECT count(*)::int AS n FROM customers")) == [{"n": 3}]
 
 
 def test_transaction_is_read_only_and_rolled_back(connected: Database) -> None:
+    """Queries run in a read-only transaction."""
     assert run(_rows("SELECT current_setting('transaction_read_only') AS ro")) == [{"ro": "on"}]
 
 
 def test_statement_timeout(connected: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """QUERY_TIMEOUT_MS is applied as statement_timeout, and a slower query is cancelled."""
     monkeypatch.setattr(db, "query_timeout_ms", 300)
     assert run(_rows("SELECT current_setting('statement_timeout') AS t")) == [{"t": "300ms"}]
     with pytest.raises(psycopg.errors.QueryCanceled, match="statement timeout"):
@@ -203,21 +230,26 @@ def test_statement_timeout(connected: Database, monkeypatch: pytest.MonkeyPatch)
 
 
 def test_row_cap(connected: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At most max_rows rows are returned; a smaller LIMIT is kept."""
     monkeypatch.setattr(db, "max_rows", 7)
     assert len(run(_rows('SELECT * FROM "Mixed Case"'))) == 7
     assert len(run(_rows('SELECT * FROM "Mixed Case" LIMIT 3'))) == 3
 
 
 def test_default_row_cap_from_settings(connected: Database) -> None:
+    """The row cap comes from MAX_ROWS (1000 in the tests)."""
     assert db.max_rows == 1000  # MAX_ROWS set by conftest
     assert len(run(_rows('SELECT * FROM "Mixed Case"'))) == 1000
 
 
 def test_empty_result(connected: Database) -> None:
+    """A query with no rows returns an empty list."""
     assert run(_rows("SELECT * FROM customers WHERE false")) == []
 
 
 def test_connections_are_closed(connected: Database) -> None:
+    """Every query closes its connection, whether it succeeds or fails."""
+
     def open_count() -> int:
         with direct_connect(connected.url) as conn:
             row = conn.execute(
@@ -236,6 +268,7 @@ def test_connections_are_closed(connected: Database) -> None:
 
 
 def test_all_column_types_convert_to_json(connected: Database) -> None:
+    """Every seeded column type converts to the expected JSON value."""
     orders = json.loads(to_json(run(_rows("SELECT * FROM sales.orders ORDER BY id"))))
     assert orders[0] == {
         "id": 1,

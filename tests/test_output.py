@@ -44,25 +44,36 @@ from postgres_mcp import output
     ],
 )
 def test_jsonable(value: Any, expected: Any) -> None:
+    """Database values become JSON values.
+
+    NaN and infinities become null, Decimal exact text, dates ISO 8601, bytes PostgreSQL's hex text,
+    other types str; containers are converted recursively, with string keys.
+    """
     assert output._jsonable(value) == expected
 
 
 def test_to_json_is_indented_valid_json_with_raw_unicode() -> None:
+    """to_json writes JSON indented by 2 spaces, with Hebrew left unescaped and NaN as null."""
     text = output.to_json([{"name": "דנה", "n": Decimal("1.0"), "f": float("nan")}])
     assert text == '[\n  {\n    "name": "דנה",\n    "n": "1.0",\n    "f": null\n  }\n]'
     assert json.loads(text)[0]["f"] is None
 
 
 def test_to_json_empty_list() -> None:
+    """No rows give `[]`."""
     assert output.to_json([]) == "[]"
 
 
 def test_error_text() -> None:
+    """error_text is the exception's message, or its type name when it has none."""
     assert output.error_text(ValueError("bad value")) == "bad value"
     assert output.error_text(TimeoutError()) == "TimeoutError"
 
 
 def test_use_utf8_output_writes_utf8_and_lf(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On cp1252 streams that translate newlines to CRLF (Windows with piped output), stdout and
+    stderr switch to UTF-8 and LF.
+    """
     out_bytes, err_bytes = io.BytesIO(), io.BytesIO()
     # As on Windows with piped output: an ANSI code page and "\r\n" translation.
     stdout = io.TextIOWrapper(out_bytes, encoding="cp1252", newline="\r\n")
@@ -79,6 +90,9 @@ def test_use_utf8_output_writes_utf8_and_lf(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_use_utf8_output_leaves_other_streams_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Streams that cannot be reconfigured, such as StringIO, are left as they are, without an
+    error.
+    """
     stream = io.StringIO()
     monkeypatch.setattr(sys, "stdout", stream)
     monkeypatch.setattr(sys, "stderr", stream)
@@ -87,6 +101,10 @@ def test_use_utf8_output_leaves_other_streams_alone(monkeypatch: pytest.MonkeyPa
 
 
 def test_run_returns_result_on_a_selector_loop_on_windows() -> None:
+    """run() returns the coroutine's result and, on Windows, uses a selector event loop (psycopg's
+    async mode needs one).
+    """
+
     async def loop_type() -> type[asyncio.AbstractEventLoop]:
         return type(asyncio.get_running_loop())
 
@@ -96,6 +114,8 @@ def test_run_returns_result_on_a_selector_loop_on_windows() -> None:
 
 
 def test_run_propagates_exceptions() -> None:
+    """An exception in the coroutine comes out of run() unchanged."""
+
     async def fail() -> None:
         raise LookupError("boom")
 

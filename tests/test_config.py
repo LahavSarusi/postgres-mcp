@@ -21,11 +21,15 @@ from postgres_mcp import config
 def test_positive_int_accepts_whole_numbers(
     monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
 ) -> None:
+    """Whole numbers are accepted, also with spaces, a .0 or an exponent; an empty value gives the
+    fallback.
+    """
     monkeypatch.setenv("SOME_LIMIT", raw)
     assert config._positive_int("SOME_LIMIT", 77) == expected
 
 
 def test_positive_int_unset_uses_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset variable gives the fallback."""
     monkeypatch.delenv("SOME_LIMIT", raising=False)
     assert config._positive_int("SOME_LIMIT", 77) == 77
 
@@ -34,6 +38,9 @@ def test_positive_int_unset_uses_fallback(monkeypatch: pytest.MonkeyPatch) -> No
 def test_positive_int_rejects_others(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raw: str
 ) -> None:
+    """Zero, negatives, fractions, inf, nan and text exit with code 1 and a message naming the
+    variable.
+    """
     monkeypatch.setenv("SOME_LIMIT", raw)
     with pytest.raises(SystemExit) as exit_info:
         config._positive_int("SOME_LIMIT", 77)
@@ -47,6 +54,7 @@ def test_positive_int_rejects_others(
 def test_llm_config_reads_settings_and_strips_trailing_slashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The three LLM_* settings are read, and trailing slashes are removed from the base URL."""
     monkeypatch.setenv("LLM_BASE_URL", "https://host.example/v1///")
     monkeypatch.setenv("LLM_API_KEY", "k")
     monkeypatch.setenv("LLM_MODEL", "m")
@@ -54,6 +62,7 @@ def test_llm_config_reads_settings_and_strips_trailing_slashes(
 
 
 def test_llm_config_names_every_missing_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset and empty settings are all named in one error that points at .env."""
     monkeypatch.delenv("LLM_BASE_URL")
     monkeypatch.setenv("LLM_MODEL", "")
     with pytest.raises(RuntimeError) as error:
@@ -64,6 +73,7 @@ def test_llm_config_names_every_missing_setting(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_env_file_is_at_project_root() -> None:
+    """.env is looked up at the project root."""
     assert config.env_file == PROJECT_ROOT / ".env"
     assert config.PROJECT_ROOT == PROJECT_ROOT
 
@@ -83,6 +93,11 @@ PRINT_SETTINGS = (
 def run_with_env_file(
     tmp_path: Path, env_text: str | None, environ: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
+    """Imports config in a fresh interpreter from a copy of the package.
+
+    `env_text` becomes the copy's .env (no file when None) and the working directory is elsewhere.
+    The child prints max_rows|query_timeout_ms|PGPASSWORD|PGSSLMODE.
+    """
     shutil.copytree(
         PROJECT_ROOT / "src" / "postgres_mcp",
         tmp_path / "src" / "postgres_mcp",
@@ -103,28 +118,37 @@ def run_with_env_file(
 
 
 def test_env_file_loaded_from_project_root_not_cwd(tmp_path: Path) -> None:
+    """.env at the project root is read when the working directory is elsewhere; keys it lacks stay
+    unset.
+    """
     result = run_with_env_file(tmp_path, "MAX_ROWS=42\nQUERY_TIMEOUT_MS=900\nPGPASSWORD=pw\n")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "42|900|pw|None"
 
 
 def test_environment_overrides_env_file(tmp_path: Path) -> None:
+    """A variable already in the environment beats the value in .env."""
     result = run_with_env_file(tmp_path, "MAX_ROWS=42\n", {"MAX_ROWS": "7"})
     assert result.stdout.strip().split("|")[0] == "7", result.stderr
 
 
 def test_defaults_without_env_file(tmp_path: Path) -> None:
+    """Without a .env, MAX_ROWS is 500 and QUERY_TIMEOUT_MS is 15000."""
     result = run_with_env_file(tmp_path, None)
     assert result.stdout.strip() == "500|15000|None|None", result.stderr
 
 
 def test_password_taken_literally(tmp_path: Path) -> None:
+    """Values in .env are not expanded or unquoted ($, #, @ and quotes stay as written), and an
+    empty value stays empty.
+    """
     password = "p@ss#w0rd!${HOME}$x'\""
     result = run_with_env_file(tmp_path, f"PGPASSWORD={password}\nPGSSLMODE=\n")
     assert result.stdout.strip() == f"500|15000|{password}|", result.stderr
 
 
 def test_invalid_limit_in_env_file_exits(tmp_path: Path) -> None:
+    """An invalid limit in .env makes the import exit with code 1 and a message naming it."""
     result = run_with_env_file(tmp_path, "QUERY_TIMEOUT_MS=soon\n")
     assert result.returncode == 1
     assert result.stderr.strip() == 'QUERY_TIMEOUT_MS must be a positive whole number, got "soon".'

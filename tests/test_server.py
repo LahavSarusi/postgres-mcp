@@ -29,10 +29,16 @@ from postgres_mcp.server import RESOURCE_NOT_FOUND, TOOLS, create_server, resour
     ],
 )
 def test_resource_base_from_url_has_no_credentials(url: str, base: str) -> None:
+    """The resource URI base keeps the URL's host and port, never its user, password, database or
+    options.
+    """
     assert resource_base(url) == base
 
 
 def test_resource_base_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a URL the base comes from PGHOST and PGPORT, with port 5432 when PGPORT is empty or
+    unset.
+    """
     monkeypatch.setenv("PGHOST", "db.internal")
     monkeypatch.setenv("PGPORT", "6000")
     assert resource_base(None) == "postgres://db.internal:6000"
@@ -46,22 +52,26 @@ def test_resource_base_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def handler(srv: Any, method: str) -> Any:
+    """The function the server registered for the MCP `method`."""
     entry = srv.get_request_handler(method)
     assert entry is not None, method
     return entry.handler
 
 
 def call_tool(srv: Any, name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
+    """Calls the tools/call handler directly."""
     params = types.CallToolRequestParams(name=name, arguments=arguments)
     result: types.CallToolResult = run(handler(srv, "tools/call")(None, params))
     return result
 
 
 def texts(result: types.CallToolResult) -> list[str]:
+    """The text parts of a tool result."""
     return [c.text for c in result.content if isinstance(c, types.TextContent)]
 
 
 def test_server_identity_and_capabilities() -> None:
+    """The server reports its name and version and offers tools and resources, not prompts."""
     srv = create_server(None)
     assert srv.name == "postgres-mcp-server"
     assert srv.version == __version__ == "0.1.0"
@@ -72,6 +82,7 @@ def test_server_identity_and_capabilities() -> None:
 
 
 def test_list_tools() -> None:
+    """tools/list returns ask, which needs a question, and query, which needs sql."""
     result = run(handler(create_server(None), "tools/list")(None, None))
     assert result.tools == TOOLS
     ask_tool, query_tool = TOOLS
@@ -82,6 +93,7 @@ def test_list_tools() -> None:
 
 
 def test_query_tool(connected: Database) -> None:
+    """The query tool returns the rows as indented JSON text."""
     result = call_tool(
         create_server(None), "query", {"sql": "SELECT name FROM customers ORDER BY id"}
     )
@@ -92,6 +104,7 @@ def test_query_tool(connected: Database) -> None:
 
 
 def test_ask_tool(connected: Database, llm: MockLlm) -> None:
+    """The ask tool returns the rows, then the SQL it ran."""
     llm.script("SELECT count(*)::int AS n FROM customers")
     result = call_tool(create_server(None), "ask", {"question": "how many customers?"})
     assert result.is_error is False
@@ -115,18 +128,21 @@ def test_ask_tool(connected: Database, llm: MockLlm) -> None:
     ],
 )
 def test_invalid_arguments(name: str, arguments: dict[str, Any] | None, message: str) -> None:
+    """Missing, blank or non-string arguments give a tool error, not a protocol error."""
     result = call_tool(create_server(None), name, arguments)
     assert result.is_error is True
     assert texts(result) == [message]
 
 
 def test_query_tool_database_error_is_a_tool_error(connected: Database) -> None:
+    """A refused query is a tool error with PostgreSQL's message."""
     result = call_tool(create_server(None), "query", {"sql": "DELETE FROM customers"})
     assert result.is_error is True
     assert texts(result)[0].startswith("syntax error")
 
 
 def test_ask_tool_llm_error_is_a_tool_error(connected: Database, llm: MockLlm) -> None:
+    """An LLM failure is a tool error with its message."""
     llm.script(Reply(status=500, raw=b"down"))
     result = call_tool(create_server(None), "ask", {"question": "q"})
     assert result.is_error is True
@@ -134,6 +150,7 @@ def test_ask_tool_llm_error_is_a_tool_error(connected: Database, llm: MockLlm) -
 
 
 def test_unknown_tool_is_a_protocol_error() -> None:
+    """An unknown tool name is an INVALID_PARAMS protocol error."""
     with pytest.raises(MCPError) as error:
         call_tool(create_server(None), "drop_everything", {})
     assert error.value.error.code == types.INVALID_PARAMS
@@ -141,6 +158,9 @@ def test_unknown_tool_is_a_protocol_error() -> None:
 
 
 def test_list_resources(connected: Database) -> None:
+    """resources/list has one JSON schema resource per table and view in the public schema, the name
+    URL-encoded in the URI.
+    """
     srv = create_server(None)
     result = run(handler(srv, "resources/list")(None, None))
     base = f"postgres://{connected.host}:{connected.port}"
@@ -155,12 +175,14 @@ def test_list_resources(connected: Database) -> None:
 
 
 def read_resource(srv: Any, uri: str) -> types.ReadResourceResult:
+    """Calls the resources/read handler directly."""
     params = types.ReadResourceRequestParams(uri=uri)
     result: types.ReadResourceResult = run(handler(srv, "resources/read")(None, params))
     return result
 
 
 def test_read_resource(connected: Database) -> None:
+    """Reading a table's schema resource returns its column names and types as JSON."""
     uri = "postgres://h:1/Mixed%20Case/schema"
     result = read_resource(create_server(None), uri)
     [content] = result.contents
@@ -174,6 +196,7 @@ def test_read_resource(connected: Database) -> None:
 
 
 def test_read_resource_of_unknown_table_is_not_found(connected: Database) -> None:
+    """An unknown table gives the resource-not-found error, -32002."""
     with pytest.raises(MCPError) as error:
         read_resource(create_server(None), "postgres://h:1/custmers/schema")
     assert error.value.error.code == RESOURCE_NOT_FOUND == -32002
@@ -181,6 +204,7 @@ def test_read_resource_of_unknown_table_is_not_found(connected: Database) -> Non
 
 
 def test_read_resource_of_table_outside_public_is_not_found(connected: Database) -> None:
+    """A table outside the public schema is not found."""
     # sales.orders exists, but resources cover the public schema only.
     with pytest.raises(MCPError) as error:
         read_resource(create_server(None), "postgres://h:1/orders/schema")
@@ -189,6 +213,7 @@ def test_read_resource_of_table_outside_public_is_not_found(connected: Database)
 
 
 def test_read_resource_ignores_same_name_in_other_schemas(connected: Database) -> None:
+    """A public table is read without the columns of a same-named table in another schema."""
     # information_schema.routines is a built-in view with the same name.
     with direct_connect(connected.url, autocommit=True) as conn:
         conn.execute("CREATE TABLE routines (k int, v text)")
@@ -205,6 +230,7 @@ def test_read_resource_ignores_same_name_in_other_schemas(connected: Database) -
 
 
 def test_read_resource_of_table_without_columns_is_empty(connected: Database) -> None:
+    """A table with no columns gives an empty list, not an error."""
     with direct_connect(connected.url, autocommit=True) as conn:
         conn.execute("CREATE TABLE no_columns ()")
     try:
@@ -220,6 +246,7 @@ def test_read_resource_of_table_without_columns_is_empty(connected: Database) ->
     "uri", ["postgres://h:1/customers/columns", "postgres://h:1/", "postgres://h:1", "x"]
 )
 def test_read_resource_rejects_other_uris(uri: str) -> None:
+    """URIs not of the form <base>/<table>/schema are INVALID_PARAMS errors."""
     with pytest.raises(MCPError) as error:
         read_resource(create_server(None), uri)
     assert error.value.error.code == types.INVALID_PARAMS
@@ -227,6 +254,7 @@ def test_read_resource_rejects_other_uris(uri: str) -> None:
 
 
 def test_resource_errors_keep_their_message(pg: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Database errors while listing or reading resources keep PostgreSQL's message."""
     monkeypatch.setenv("PGPASSWORD", "wrong")
     server.connect()
     srv = create_server(None)
@@ -242,6 +270,11 @@ def test_resource_errors_keep_their_message(pg: Database, monkeypatch: pytest.Mo
 
 
 async def session_checks(command: str, args: list[str], expect_base: str) -> None:
+    """Starts the server as `command args` and checks it as an MCP client.
+
+    Covers identity, tools, tool and protocol errors, and resources, whose URIs must start with
+    `expect_base` and hold no credentials.
+    """
     import os
 
     params = StdioServerParameters(command=command, args=args, env=dict(os.environ))
@@ -285,6 +318,7 @@ async def session_checks(command: str, args: list[str], expect_base: str) -> Non
 
 
 def test_stdio_server_with_pg_environment(pg: Database, llm: MockLlm) -> None:
+    """The installed postgres-mcp-server, set up by PG* variables, passes the client checks."""
     llm.script("SELECT 1 AS one")
     anyio.run(
         session_checks,
@@ -297,6 +331,7 @@ def test_stdio_server_with_pg_environment(pg: Database, llm: MockLlm) -> None:
 def test_stdio_server_with_url_argument_via_python_m(
     pg: Database, llm: MockLlm, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`python -m postgres_mcp <url>`, with no PG* variables, passes the client checks."""
     for name in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"):
         monkeypatch.setenv(name, "")
     llm.script("SELECT 1 AS one")
@@ -309,6 +344,7 @@ def test_stdio_server_with_url_argument_via_python_m(
 
 
 def test_main_passes_the_url_argument(monkeypatch: pytest.MonkeyPatch) -> None:
+    """main() connects with the URL given as the first argument, then runs the server."""
     seen: dict[str, Any] = {}
 
     def fake_run(coroutine: Any) -> None:
@@ -326,6 +362,7 @@ def test_main_passes_the_url_argument(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_main_without_url_uses_pg_settings(
     monkeypatch: pytest.MonkeyPatch, argv: list[str]
 ) -> None:
+    """With no argument, or an empty one, main() connects with the PG* settings."""
     seen: list[Any] = []
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(server, "connect", seen.append)
@@ -335,6 +372,8 @@ def test_main_without_url_uses_pg_settings(
 
 
 def test_main_ctrl_c_is_quiet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl+C stops the server quietly, without an error exit."""
+
     def interrupted(coroutine: Any) -> None:
         coroutine.close()
         raise KeyboardInterrupt
@@ -348,6 +387,8 @@ def test_main_ctrl_c_is_quiet(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_main_crash_exits_1(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Any other error while serving is printed to stderr and exits with code 1."""
+
     def crashed(coroutine: Any) -> None:
         coroutine.close()
         raise OSError("stdin closed")
@@ -362,6 +403,7 @@ def test_main_crash_exits_1(
 
 
 def test_server_exits_without_database_settings() -> None:
+    """Without database settings the server exits with code 1, writing only to stderr."""
     result = run_script([script_path("postgres-mcp-server")], timeout=30)
     assert result.returncode == 1
     assert result.stdout == b""  # stdout belongs to the MCP protocol
@@ -369,6 +411,7 @@ def test_server_exits_without_database_settings() -> None:
 
 
 def test_server_exits_on_invalid_url() -> None:
+    """An invalid URL argument exits with code 1."""
     result = run_script([script_path("postgres-mcp-server"), "postgresql://h/d?bad_option=1"])
     assert result.returncode == 1
     assert result.stderr.decode().startswith("Invalid database URL: ")
