@@ -1,4 +1,4 @@
-# PostgreSQL MCP server (Python)
+# PostgreSQL MCP server
 
 Ask your PostgreSQL database a question in plain language (Hebrew, English or any
 other language) and get the matching rows back as a JSON array. An LLM you configure
@@ -12,11 +12,31 @@ It works as an MCP server (for any MCP client) and as a command-line tool.
 Requires Python 3.11 or newer.
 
 ```sh
-python -m venv .venv
-.venv/Scripts/activate        # Windows; on macOS/Linux: source .venv/bin/activate
-pip install -e .              # installs the commands below
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
 cp .env.example .env          # then fill in .env
 ```
+
+```powershell
+# Windows (PowerShell)
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
+Copy-Item .env.example .env   # then fill in .env
+```
+
+If PowerShell refuses to run `Activate.ps1`, allow local scripts once with
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+`pip install -e .` installs three commands into the virtual environment:
+
+| Command | What it does |
+|---|---|
+| `postgres-mcp-server` | Starts the MCP server (also: `python -m postgres_mcp`) |
+| `postgres-mcp-ask` | Asks one question from the command line |
+| `postgres-mcp-descriptions-init` | Writes a starter `descriptions.json` |
 
 ### `.env` settings
 
@@ -24,34 +44,57 @@ cp .env.example .env          # then fill in .env
 |---|---|
 | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | Database connection. Write the password as-is; no quoting or encoding. |
 | `PGSSLMODE` | Empty for a local database; `require` for most cloud databases. |
+| `PGCONNECT_TIMEOUT` | Optional. Seconds to wait for the database to accept a connection (default 10). |
 | `LLM_BASE_URL` | Base URL of an OpenAI-compatible model API, usually ending in `/v1`. |
 | `LLM_API_KEY` | API key for that URL. |
 | `LLM_MODEL` | Model name exactly as the API lists it (default choice: `qwen3.8-27b-fp8`). |
 | `MAX_ROWS` | Most rows one query may return (default 500). |
 | `QUERY_TIMEOUT_MS` | Longest a query may run, in milliseconds (default 15000). |
-| `PGCONNECT_TIMEOUT` | Optional. Seconds to wait for the database to accept a connection (default 10). |
 
-`.env` is git-ignored. Variables already set in the environment override it.
+- `.env` is read from the project folder, wherever the program is started from.
+- Variables already set in the environment override it.
+- `.env` is git-ignored.
+- Without the `LLM_*` settings, the `query` tool and the schema resources still work;
+  only `ask` reports what is missing.
 
 To check the model API before first use (it should list your model):
 
+```powershell
+# PowerShell
+Invoke-RestMethod "$env:LLM_BASE_URL/models" -Headers @{ Authorization = "Bearer $env:LLM_API_KEY" }
+```
+
 ```sh
+# macOS / Linux
 curl "$LLM_BASE_URL/models" -H "Authorization: Bearer $LLM_API_KEY"
 ```
 
+These read the variables from your shell, so set them there first, or paste the values
+in.
+
 ### Use a read-only database user
 
-Every query runs one statement only, inside a read-only transaction, with a timeout
-and a row cap. A user that can only read is still the strongest protection:
+Every query is confined in four ways:
+
+1. **One statement only:** Postgres refuses a second one (this is what stops
+   `COMMIT; DELETE ...`).
+2. **Read only:** it runs in a read-only transaction that is always rolled back.
+3. **Row queries only:** it is wrapped as a subquery, so only a query that returns rows
+   is accepted.
+4. **Limits:** a time limit (`QUERY_TIMEOUT_MS`) and a row limit (`MAX_ROWS`).
+
+A database user that can only read is still the strongest protection:
 
 ```sql
 CREATE USER mcp_reader WITH PASSWORD 'choose-a-password';
 GRANT CONNECT ON DATABASE mydb TO mcp_reader;
 GRANT USAGE ON SCHEMA public TO mcp_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO mcp_reader;
+-- Also tables created later:
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mcp_reader;
 ```
 
-Repeat the last two lines for each other schema the LLM should see.
+Repeat the last three lines for each other schema the LLM should see.
 
 ## Describing your tables
 
@@ -75,6 +118,8 @@ Create a starter file listing every table and column, then fill in what you need
 postgres-mcp-descriptions-init
 ```
 
+It never overwrites an existing `descriptions.json`.
+
 ```json
 {
   "customers": {
@@ -93,6 +138,7 @@ postgres-mcp-descriptions-init
   file's blanks can stay.
 - A note for a table or column that doesn't exist (a typo, or a renamed table) prints a
   warning and is skipped.
+- A malformed file stops the question with an error naming the file and the bad entry.
 - The CLI reads the file on every run. The MCP server reads it once, so restart your MCP
   client after editing it.
 
@@ -102,20 +148,50 @@ postgres-mcp-descriptions-init
 postgres-mcp-ask "customers from Haifa who ordered this month"
 ```
 
-The rows go to stdout as a JSON array; the generated SQL and any error go to stderr.
+The rows go to stdout as a JSON array; the generated SQL and any error go to stderr. The
+output is UTF-8, so it can be piped or saved:
+
+```sh
+postgres-mcp-ask "לקוחות מחיפה" > rows.json
+```
+
+The exit code is 0 on success and 1 on any error.
 
 ## MCP server
 
-Register the server with your MCP client, for example in Claude Code:
+Two separate programs are involved:
+
+- **The model that writes the SQL** is the one set in `.env` (`LLM_BASE_URL`,
+  `LLM_MODEL`). The server calls it for every `ask`.
+- **The MCP client** is the app that connects to this server and calls its tools. It can
+  be any MCP client; the server does not depend on which one.
+
+The server talks over stdio. Register it with your MCP client by giving the client this
+command:
 
 ```sh
-claude mcp add postgres -- "C:/path/to/project/.venv/Scripts/postgres-mcp-server.exe"
+/path/to/postgres-mcp/.venv/bin/postgres-mcp-server
 ```
 
-(On macOS/Linux the path is `.venv/bin/postgres-mcp-server`. `python -m postgres_mcp`
-with the venv's Python works too.)
+Many clients take it in this JSON form:
 
-A database URL given as an extra argument overrides the `PG*` settings.
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "/path/to/postgres-mcp/.venv/bin/postgres-mcp-server"
+    }
+  }
+}
+```
+
+- **Command path:** on Windows it is `.venv\Scripts\postgres-mcp-server.exe`. Running
+  `python -m postgres_mcp` with the virtual environment's Python works too.
+- **Settings:** the server reads `.env` from the project folder itself, so the client
+  needs no environment settings.
+- **Database URL:** given as an extra argument (`args` in JSON), it overrides the `PG*`
+  settings.
+- **Without an MCP client:** use the [command line](#command-line) instead.
 
 ### Tools
 
@@ -125,10 +201,14 @@ A database URL given as an extra argument overrides the `PG*` settings.
 - **`query`** — `sql` (string): runs one SELECT under the same read-only rules and
   returns the rows as a JSON array.
 
+A failed query or LLM call is returned as a tool error with the reason, for example
+`syntax error at or near "DELETE"` or `LLM request failed (401): ...`.
+
 ### Resources
 
-- **Table schemas** (`postgres://<host>/<table>/schema`): the column names and types of
-  each table in the `public` schema.
+- **Table schemas** (`postgres://<host>:<port>/<table>/schema`): the column names and
+  types of each table in the `public` schema. The URIs never contain the user or password.
+  Asking for a table that doesn't exist returns a `Table "<name>" not found` error.
 
 ### Docker
 
@@ -137,19 +217,106 @@ docker build -t postgres-mcp-python .
 docker run -i --rm --env-file .env postgres-mcp-python
 ```
 
-`.env` and `descriptions.json` are not copied into the image. Pass settings with
-`--env-file`, and mount notes with `-v "$PWD/descriptions.json:/app/descriptions.json:ro"`.
-For a database on the host machine, use `PGHOST=host.docker.internal`.
+- **Settings:** `.env` and `descriptions.json` are not copied into the image. Pass
+  settings with `--env-file`.
+- **Notes:** mount `descriptions.json` with
+  `-v "$PWD/descriptions.json:/app/descriptions.json:ro"`.
+- **Database on this machine:** set `PGHOST=host.docker.internal`, because inside the
+  container `localhost` is the container itself.
+- **User:** the container runs as a non-root user.
 
 ## How values appear in the JSON
 
-`numeric` values are strings, so no digit is lost; dates and times are ISO 8601;
-`bytea` is `\x` followed by hex; `json`/`jsonb` columns are nested JSON; UUIDs,
-intervals and other types are their text form.
+| PostgreSQL type | JSON |
+|---|---|
+| `integer`, `bigint` | number |
+| `real`, `double precision` | number; `NaN` and `Infinity` become `null` |
+| `numeric` | string, so no digit is lost: `"1234567890.12"` |
+| `boolean` | `true` / `false` |
+| `text`, `varchar`, `char` | string |
+| `date`, `time`, `timestamp`, `timestamptz` | ISO 8601 string: `"2026-11-01"`, `"2026-11-01T10:00:00+00:00"` |
+| `interval` | Python's form: `"1 day, 2:00:00"` |
+| `json`, `jsonb` | nested JSON |
+| arrays | JSON arrays |
+| `bytea` | `"\\xdeadbeef"` (`\x` followed by hex) |
+| `uuid`, `inet`, ranges and other types | their text form: `"[1, 5)"` |
+
+## Troubleshooting
+
+| Message | Cause and fix |
+|---|---|
+| `Missing database settings: ...` | Fill in the named `PG*` settings in `.env`, or pass a database URL. |
+| `connection timeout expired` | Nothing answered at `PGHOST`:`PGPORT`. Check that the database is running and the host and port are right. |
+| `password authentication failed` | Wrong `PGUSER` or `PGPASSWORD`. |
+| `Missing LLM settings: ...` | Fill in the named `LLM_*` settings in `.env`. |
+| `Could not reach the LLM at ...` | Wrong `LLM_BASE_URL`, or the model host is down. The message ends with the reason. |
+| `LLM request failed (401): ...` | Wrong `LLM_API_KEY`. A 404 usually means a wrong `LLM_BASE_URL` or `LLM_MODEL`. |
+| `... must be a positive whole number` | Fix `MAX_ROWS` or `QUERY_TIMEOUT_MS`. |
+| `canceling statement due to statement timeout` | The query ran longer than `QUERY_TIMEOUT_MS`. |
+| New tables or columns are not used | The MCP server reads the schema once; restart your MCP client. |
+| VS Code: `Package ... is not installed` | Select `.venv` with **Python: Select Interpreter**. |
+
+## Known limitations
+
+- **Semicolon before a comment:** a query ending in a semicolon followed by a comment
+  (`SELECT ...; -- note`) is rejected by Postgres. In `ask`, the error goes back to the
+  LLM, which returns the query without it, at the cost of one extra LLM call.
+- **Schema cache:** the MCP server reads the schema and `descriptions.json` once; restart
+  it after changing either.
 
 ## How it works
 
-| File | Role |
+The path of one question, from the client to the rows:
+
+```text
+ MCP client ──ask──►┐
+                    ├─► 1. settings ─► 2. schema ─► 3. prompt ─► 4. LLM writes SQL
+ postgres-mcp-ask ─►┘                                                 │
+                                                                      ▼
+            7. rows + SQL back ◄─ 6. one retry if rejected ◄─ 5. run read-only
+```
+
+1. **Settings** (`config.py`, `db.py`): at startup, `.env` is loaded from the project
+   folder and the database settings are checked. A missing setting stops the program
+   with a message naming it.
+2. **Schema** (`schema.py`, `descriptions.py`): two catalog queries read every table and
+   view in every user schema, with their columns, types, primary keys and foreign keys.
+   The notes from `descriptions.json` are added under their tables. The result is compact
+   text, one line per table. The MCP server builds it once and keeps it until it
+   restarts; the command line builds it on every run.
+3. **Prompt** (`llm.py`): the model receives fixed rules (one SELECT only, use only the
+   listed names, return only SQL), then the schema text and the question.
+4. **LLM** (`llm.py`): the request goes to `LLM_BASE_URL/chat/completions` with
+   temperature 0, so the same question gives the same SQL. The model gets 120 seconds to
+   answer. Reasoning (`<think>...</think>`) and code fences are removed from the reply,
+   leaving the SQL.
+5. **Run read-only** (`db.py`): the SQL runs on a new database connection, under the
+   four protections in [Use a read-only database user](#use-a-read-only-database-user).
+   The transaction is rolled back and the connection closed after every query, whether
+   it succeeded or not.
+6. **One retry** (`ask.py`): if Postgres rejects the SQL (for example a wrong column
+   name), its error message goes back to the model, which writes a corrected query. That
+   query runs the same way. If it fails too, the error is returned; there is no third
+   try.
+7. **Rows back** (`output.py`): the rows are turned into a JSON array (see
+   [How values appear in the JSON](#how-values-appear-in-the-json)) and returned with
+   the SQL that produced them:
+   - **MCP:** two text items, the rows and then `SQL: ...`. An error comes back as a tool
+     error with the reason.
+   - **Command line:** the rows on stdout, the SQL on stderr. An error goes to stderr
+     with exit code 1.
+
+The other entry points use parts of this path:
+
+- **`query` tool:** skips steps 2–4 and 6. The SQL it is given runs directly in step 5.
+- **Schema resources:** read the table list and each table's columns straight from the
+  catalog. No model is involved.
+- **`postgres-mcp-descriptions-init`:** runs step 2's catalog queries and writes the
+  table and column names into a starter `descriptions.json`.
+
+## Project layout
+
+| Path | Role |
 |---|---|
 | `src/postgres_mcp/config.py` | Loads `.env`; the limits and LLM settings |
 | `src/postgres_mcp/db.py` | Database connections and `run_read_only`, the only path user and LLM SQL runs through |
@@ -159,8 +326,13 @@ intervals and other types are their text form.
 | `src/postgres_mcp/llm.py` | Calls the model API and extracts the SQL from its reply |
 | `src/postgres_mcp/ask.py` | Question → SQL → rows, with one correction retry |
 | `src/postgres_mcp/server.py` | MCP server |
+| `src/postgres_mcp/__main__.py` | `python -m postgres_mcp` starts the MCP server |
 | `src/postgres_mcp/cli.py` | Command line |
 | `src/postgres_mcp/output.py` | JSON output, error text, and the event loop setup |
+| `tests/` | The test suite (see [Tests](#tests)) |
+| `pyproject.toml` | Package, dependencies, commands, and ruff/mypy/pytest settings |
+| `Dockerfile`, `.dockerignore` | The container image |
+| `.env.example` | Template for `.env` |
 
 With `pip install -e .`, edits in `src/` take effect on the next run, with no build
 step. Editing `.env` needs only a restart of the MCP client.

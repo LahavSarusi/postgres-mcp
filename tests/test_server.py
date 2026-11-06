@@ -6,7 +6,7 @@ from typing import Any
 
 import anyio
 import pytest
-from conftest import Database, MockLlm, Reply, run_script, script_path
+from conftest import Database, MockLlm, Reply, direct_connect, run_script, script_path
 from mcp import types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -14,7 +14,7 @@ from mcp.shared.exceptions import MCPError
 
 from postgres_mcp import __version__, server
 from postgres_mcp.output import run
-from postgres_mcp.server import TOOLS, create_server, resource_base
+from postgres_mcp.server import RESOURCE_NOT_FOUND, TOOLS, create_server, resource_base
 
 # ---------------------------------------------------------------- resource_base
 
@@ -173,10 +173,47 @@ def test_read_resource(connected: Database) -> None:
     ]
 
 
-def test_read_resource_of_unknown_table_is_empty(connected: Database) -> None:
-    [content] = read_resource(create_server(None), "postgres://h:1/nothing/schema").contents
-    assert isinstance(content, types.TextResourceContents)
-    assert content.text == "[]"
+def test_read_resource_of_unknown_table_is_not_found(connected: Database) -> None:
+    with pytest.raises(MCPError) as error:
+        read_resource(create_server(None), "postgres://h:1/custmers/schema")
+    assert error.value.error.code == RESOURCE_NOT_FOUND == -32002
+    assert error.value.error.message == 'Table "custmers" not found'
+
+
+def test_read_resource_of_table_outside_public_is_not_found(connected: Database) -> None:
+    # sales.orders exists, but resources cover the public schema only.
+    with pytest.raises(MCPError) as error:
+        read_resource(create_server(None), "postgres://h:1/orders/schema")
+    assert error.value.error.code == RESOURCE_NOT_FOUND
+    assert error.value.error.message == 'Table "orders" not found'
+
+
+def test_read_resource_ignores_same_name_in_other_schemas(connected: Database) -> None:
+    # information_schema.routines is a built-in view with the same name.
+    with direct_connect(connected.url, autocommit=True) as conn:
+        conn.execute("CREATE TABLE routines (k int, v text)")
+    try:
+        [content] = read_resource(create_server(None), "postgres://h:1/routines/schema").contents
+        assert isinstance(content, types.TextResourceContents)
+        assert json.loads(content.text) == [
+            {"column_name": "k", "data_type": "integer"},
+            {"column_name": "v", "data_type": "text"},
+        ]
+    finally:
+        with direct_connect(connected.url, autocommit=True) as conn:
+            conn.execute("DROP TABLE routines")
+
+
+def test_read_resource_of_table_without_columns_is_empty(connected: Database) -> None:
+    with direct_connect(connected.url, autocommit=True) as conn:
+        conn.execute("CREATE TABLE no_columns ()")
+    try:
+        [content] = read_resource(create_server(None), "postgres://h:1/no_columns/schema").contents
+        assert isinstance(content, types.TextResourceContents)
+        assert content.text == "[]"
+    finally:
+        with direct_connect(connected.url, autocommit=True) as conn:
+            conn.execute("DROP TABLE no_columns")
 
 
 @pytest.mark.parametrize(
@@ -242,6 +279,9 @@ async def session_checks(command: str, args: list[str], expect_base: str) -> Non
         ]  # fmt: skip
         with pytest.raises(MCPError, match="Invalid resource URI"):
             await session.read_resource(f"{expect_base}/customers/other")
+        with pytest.raises(MCPError, match='Table "custmers" not found') as not_found:
+            await session.read_resource(f"{expect_base}/custmers/schema")
+        assert not_found.value.error.code == RESOURCE_NOT_FOUND
 
 
 def test_stdio_server_with_pg_environment(pg: Database, llm: MockLlm) -> None:

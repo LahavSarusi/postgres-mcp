@@ -27,6 +27,9 @@ from postgres_mcp.output import error_text, run, to_json
 
 SCHEMA_PATH = "schema"
 
+# The MCP spec's error code for a resource that does not exist; the SDK has no constant for it.
+RESOURCE_NOT_FOUND = -32002
+
 Context = ServerRequestContext[Any]
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -141,10 +144,23 @@ def create_server(database_url: str | None) -> Server[Any]:
         async with await open_connection() as conn:
             cursor = await conn.execute(
                 "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE table_name = %s",
+                "WHERE table_schema = 'public' AND table_name = %s "
+                "ORDER BY ordinal_position",
                 (table_name,),
             )
             rows = await cursor.fetchall()
+            # No columns usually means no such table (a typo, or a dropped table);
+            # a table that exists with zero columns still returns [].
+            if not rows:
+                cursor = await conn.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = %s",
+                    (table_name,),
+                )
+                if await cursor.fetchone() is None:
+                    raise MCPError(
+                        code=RESOURCE_NOT_FOUND, message=f'Table "{table_name}" not found'
+                    )
         return types.ReadResourceResult(
             contents=[
                 types.TextResourceContents(
