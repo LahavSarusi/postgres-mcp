@@ -16,14 +16,12 @@ from postgres_mcp import config
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("500", 500), (" 500 ", 500), ("500.0", 500), ("5e2", 500), ("1", 1), ("", 77)],
+    [("500", 500), (" 500 ", 500), ("1", 1), ("", 77)],
 )
 def test_positive_int_accepts_whole_numbers(
     monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
 ) -> None:
-    """Whole numbers are accepted, also with spaces, a .0 or an exponent; an empty value gives the
-    fallback.
-    """
+    """Whole numbers are accepted, also with spaces; an empty value gives the fallback."""
     monkeypatch.setenv("SOME_LIMIT", raw)
     assert config._positive_int("SOME_LIMIT", 77) == expected
 
@@ -34,12 +32,12 @@ def test_positive_int_unset_uses_fallback(monkeypatch: pytest.MonkeyPatch) -> No
     assert config._positive_int("SOME_LIMIT", 77) == 77
 
 
-@pytest.mark.parametrize("raw", ["abc", "0", "-5", "1.5", "inf", "nan", "12abc"])
+@pytest.mark.parametrize("raw", ["abc", "0", "-5", "1.5", "500.0", "5e2", "inf", "nan", "12abc"])
 def test_positive_int_rejects_others(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raw: str
 ) -> None:
-    """Zero, negatives, fractions, inf, nan and text exit with code 1 and a message naming the
-    variable.
+    """Zero, negatives, decimals, exponents, inf, nan and text exit with code 1 and a message
+    naming the variable.
     """
     monkeypatch.setenv("SOME_LIMIT", raw)
     with pytest.raises(SystemExit) as exit_info:

@@ -27,12 +27,10 @@ def _positive_int(name: str, fallback: int) -> int:
     raw = os.environ.get(name)
     if not raw:
         return fallback
-    # Like JavaScript's Number(): "500", " 500 ", "500.0" and "5e2" are all 500.
     try:
-        number = float(raw.strip())
+        value = int(raw)  # int() ignores surrounding whitespace
     except ValueError:
-        number = 0.0
-    value = int(number) if number.is_integer() else 0
+        value = 0
     if value <= 0:
         print(f'{name} must be a positive whole number, got "{raw}".', file=sys.stderr)
         sys.exit(1)

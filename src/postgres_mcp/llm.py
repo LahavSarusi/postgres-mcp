@@ -8,9 +8,10 @@ rows are returned to the caller as they are, so no model runs after the query.
 
 import asyncio
 import re
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict
 
 import httpx
+from pydantic import BaseModel, Field, ValidationError
 
 from postgres_mcp.config import llm_config
 from postgres_mcp.output import error_text
@@ -49,18 +50,18 @@ def extract_sql(reply: str) -> str:
     return _FENCE.sub("", _THINK.sub("", reply)).strip()
 
 
-def _reply_content(data: Any) -> str | None:
-    """choices[0].message.content, or None when the reply lacks it."""
-    if not isinstance(data, dict):
-        return None
-    choices = data.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        return None
-    message = choices[0].get("message")
-    if not isinstance(message, dict):
-        return None
-    content = message.get("content")
-    return content if isinstance(content, str) else None
+class _Message(BaseModel):
+    content: str
+
+
+class _Choice(BaseModel):
+    message: _Message
+
+
+class _Completion(BaseModel):
+    """The part of a chat-completions reply that is used: choices[0].message.content."""
+
+    choices: list[_Choice] = Field(min_length=1)
 
 
 async def generate_sql(messages: list[ChatMessage]) -> str:
@@ -88,10 +89,13 @@ async def generate_sql(messages: list[ChatMessage]) -> str:
     if not response.is_success:
         raise LlmError(f"LLM request failed ({response.status_code}): {response.text[:500]}")
     try:
-        data = response.json()
-    except ValueError as error:
-        raise LlmError(f"LLM returned a reply that is not JSON: {response.text[:500]}") from error
-    content = _reply_content(data)
+        content = _Completion.model_validate_json(response.content).choices[0].message.content
+    except ValidationError as error:
+        if error.errors()[0]["type"] == "json_invalid":
+            raise LlmError(
+                f"LLM returned a reply that is not JSON: {response.text[:500]}"
+            ) from error
+        raise LlmError("LLM returned no content") from error
     if not content:
         raise LlmError("LLM returned no content")
     sql = extract_sql(content)

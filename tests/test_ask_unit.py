@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import psycopg
 import pytest
 
 from postgres_mcp import ask as ask_module
@@ -66,7 +67,7 @@ def test_rejected_query_is_corrected_once(monkeypatch: pytest.MonkeyPatch) -> No
         monkeypatch,
         Stubs(
             ["SELECT b FROM t", "SELECT a FROM t"],
-            [Exception('column "b" does not exist'), [{"a": 2}]],
+            [psycopg.errors.UndefinedColumn('column "b" does not exist'), [{"a": 2}]],
         ),
     )
     assert run(ask("q")) == AskResult(sql="SELECT a FROM t", rows=[{"a": 2}])
@@ -87,9 +88,12 @@ def test_second_failure_is_raised_without_a_third_try(monkeypatch: pytest.Monkey
     """A second failure is raised as is; the LLM is not asked a third time."""
     stubs = install(
         monkeypatch,
-        Stubs(["bad 1", "bad 2", "never"], [Exception("first"), Exception("second")]),
+        Stubs(
+            ["bad 1", "bad 2", "never"],
+            [psycopg.errors.SyntaxError("first"), psycopg.errors.SyntaxError("second")],
+        ),
     )
-    with pytest.raises(Exception, match=r"^second$"):
+    with pytest.raises(psycopg.errors.SyntaxError, match=r"^second$"):
         run(ask("q"))
     assert len(stubs.llm_calls) == 2
     assert stubs.ran == ["bad 1", "bad 2"]
@@ -97,11 +101,30 @@ def test_second_failure_is_raised_without_a_third_try(monkeypatch: pytest.Monkey
 
 def test_error_without_message_uses_its_type(monkeypatch: pytest.MonkeyPatch) -> None:
     """An error with no message is reported to the LLM by its type name."""
-    stubs = install(monkeypatch, Stubs(["x", "y"], [TimeoutError(), []]))
+    stubs = install(monkeypatch, Stubs(["x", "y"], [psycopg.errors.DataError(), []]))
     run(ask("q"))
     assert stubs.llm_calls[1][-1]["content"].startswith(
-        "PostgreSQL rejected that query: TimeoutError\n"
+        "PostgreSQL rejected that query: DataError\n"
     )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        psycopg.OperationalError("connection refused"),
+        psycopg.InterfaceError("the connection is closed"),
+        psycopg.errors.QueryCanceled("canceling statement due to statement timeout"),
+        RuntimeError("not from the database"),
+    ],
+)
+def test_non_sql_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    """Connection failures, timeouts and non-database errors are raised without asking the LLM
+    again.
+    """
+    stubs = install(monkeypatch, Stubs(["SELECT 1", "never"], [error]))
+    with pytest.raises(type(error)):
+        run(ask("q"))
+    assert len(stubs.llm_calls) == 1
 
 
 def test_llm_failure_is_raised_before_running(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,6 +137,6 @@ def test_llm_failure_is_raised_before_running(monkeypatch: pytest.MonkeyPatch) -
 
 def test_llm_failure_on_retry_is_raised(monkeypatch: pytest.MonkeyPatch) -> None:
     """An LLM error while asking for the correction is raised."""
-    install(monkeypatch, Stubs(["bad", LlmError("down")], [Exception("rejected")]))
+    install(monkeypatch, Stubs(["bad", LlmError("down")], [psycopg.errors.SyntaxError("x")]))
     with pytest.raises(LlmError, match="down"):
         run(ask("q"))

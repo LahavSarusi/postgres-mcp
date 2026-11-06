@@ -53,18 +53,19 @@ def test_starter_file_blanks_load(isolated: Path) -> None:
     [
         ("[]", "must be a JSON object keyed by table name"),
         ('"text"', "must be a JSON object keyed by table name"),
-        ('{"t": 1}', '"t" must be an object'),
-        ('{"t": []}', '"t" must be an object'),
+        ('{"t": 1}', '"t": Input should be an object'),
+        ('{"t": []}', '"t": Input should be an object'),
         (
             '{"t": {"desc": "x", "other": 1}}',
-            '"t" has unknown key(s) desc, other; use "description" and "columns"',
+            '"t".desc: unknown key; use "description" and "columns"; '
+            '"t".other: unknown key; use "description" and "columns"',
         ),
-        ('{"t": {"description": 5}}', '"t".description must be a string'),
-        ('{"t": {"description": null}}', '"t".description must be a string'),
-        ('{"t": {"columns": []}}', '"t".columns must be an object of column name → text'),
-        ('{"t": {"columns": "c"}}', '"t".columns must be an object of column name → text'),
-        ('{"t": {"columns": {"c": 1}}}', '"t".columns.c must be a string'),
-        ('{"t": {"columns": {"c": null}}}', '"t".columns.c must be a string'),
+        ('{"t": {"description": 5}}', '"t".description: Input should be a valid string'),
+        ('{"t": {"description": null}}', '"t".description: Input should be a valid string'),
+        ('{"t": {"columns": []}}', '"t".columns: Input should be an object'),
+        ('{"t": {"columns": "c"}}', '"t".columns: Input should be an object'),
+        ('{"t": {"columns": {"c": 1}}}', '"t".columns.c: Input should be a valid string'),
+        ('{"t": {"columns": {"c": null}}}', '"t".columns.c: Input should be a valid string'),
     ],
 )
 def test_malformed_entries_name_the_file_and_entry(

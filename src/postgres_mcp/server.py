@@ -10,6 +10,7 @@ Built on the SDK's MCPServer (FastMCP before mcp 2): tools and the resource
 template are plain decorated functions.
 """
 
+import contextlib
 import os
 import sys
 from typing import Annotated, Any
@@ -24,7 +25,7 @@ from pydantic import Field
 from postgres_mcp import __version__
 from postgres_mcp.ask import ask as ask_question
 from postgres_mcp.db import connect, open_connection, run_read_only
-from postgres_mcp.output import error_text, run, to_json
+from postgres_mcp.output import error_text, exit_on_error, run, to_json
 
 SCHEMA_PATH = "schema"
 
@@ -187,17 +188,13 @@ def create_server(database_url: str | None) -> PostgresServer:
 def main() -> None:
     """Entry point of postgres-mcp-server: serves MCP over stdio until the client disconnects."""
     database_url = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
-    connect(database_url)
-    server = create_server(database_url)
-    try:
+    with exit_on_error():
+        connect(database_url)
+        server = create_server(database_url)
         # output.run, not server.run(): that uses anyio.run, whose default loop on
         # Windows (Proactor) does not work with psycopg's async mode.
-        run(server.run_stdio_async())
-    except KeyboardInterrupt:
-        pass
-    except Exception as error:
-        print(error_text(error), file=sys.stderr)
-        sys.exit(1)
+        with contextlib.suppress(KeyboardInterrupt):  # Ctrl+C stops the server quietly
+            run(server.run_stdio_async())
 
 
 if __name__ == "__main__":

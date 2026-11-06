@@ -310,7 +310,8 @@ The path of one question, from the client to the rows:
 6. **One retry** (`ask.py`): if Postgres rejects the SQL (for example a wrong column
    name), its error message goes back to the model, which writes a corrected query. That
    query runs the same way. If it fails too, the error is returned; there is no third
-   try.
+   try. A failed connection or a statement timeout is returned at once, without a
+   retry, since the SQL is not what went wrong.
 7. **Rows back** (`output.py`): the rows are turned into a JSON array (see
    [How values appear in the JSON](#how-values-appear-in-the-json)) and returned with
    the SQL that produced them:

@@ -11,7 +11,10 @@ server runs, and reading it costs two catalog queries.
 
 import re
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
+from itertools import groupby
+from operator import itemgetter
 
 from postgres_mcp.db import open_connection
 from postgres_mcp.descriptions import (
@@ -84,7 +87,7 @@ async def read_schema() -> list[Table]:
         columns = await (await conn.execute(COLUMNS_SQL)).fetchall()
         keys = await (await conn.execute(KEYS_SQL)).fetchall()
 
-    key_notes: dict[str, list[str]] = {}
+    key_notes: defaultdict[str, list[str]] = defaultdict(list)
     for key in keys:
         column_id = f"{key['table_schema']}.{key['table_name']}.{key['column_name']}"
         if key["contype"] == "p":
@@ -92,28 +95,31 @@ async def read_schema() -> list[Table]:
         else:
             target = table_ref(key["ref_schema"], key["ref_table"])
             note = f"→ {target}.{ident(key['ref_column'])}"
-        key_notes.setdefault(column_id, []).append(note)
+        key_notes[column_id].append(note)
 
-    tables: dict[str, Table] = {}
-    for col in columns:
-        table_id = f"{col['table_schema']}.{col['table_name']}"
-        table = tables.get(table_id)
-        if table is None:
-            table = Table(schema=col["table_schema"], name=col["table_name"])
-            tables[table_id] = table
-        table.columns.append(
-            Column(
-                name=col["column_name"],
-                type=col["data_type"],
-                keys=key_notes.get(f"{table_id}.{col['column_name']}", []),
-            )
+    # COLUMNS_SQL orders by schema and table, so each table's columns are consecutive.
+    return [
+        Table(
+            schema=schema_name,
+            name=table_name,
+            columns=[
+                Column(
+                    name=col["column_name"],
+                    type=col["data_type"],
+                    keys=key_notes.get(f"{schema_name}.{table_name}.{col['column_name']}", []),
+                )
+                for col in table_columns
+            ],
         )
-    return list(tables.values())
+        for (schema_name, table_name), table_columns in groupby(
+            columns, key=itemgetter("table_schema", "table_name")
+        )
+    ]
 
 
 def _one_line(text: str) -> str:
     """A note on one line, so a newline in the file cannot break the prompt's layout."""
-    return re.sub(r"\s+", " ", text).strip()
+    return " ".join(text.split())
 
 
 def render_schema(tables: list[Table], descriptions: Descriptions) -> str:

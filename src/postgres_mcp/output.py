@@ -1,4 +1,4 @@
-"""Shared helpers for the entry points: JSON output, error text, and running async code.
+"""Shared helpers for the entry points: JSON output, error handling, and running async code.
 
 Rows from Postgres hold values JSON cannot encode directly (Decimal, dates,
 UUIDs, bytes); they are converted to the text Postgres itself would show, so a
@@ -10,7 +10,8 @@ import io
 import json
 import math
 import sys
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Iterator
+from contextlib import contextmanager
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, TypeVar
@@ -44,6 +45,21 @@ def to_json(value: Any) -> str:
 def error_text(error: BaseException) -> str:
     """An exception's message, or its type name when it has none."""
     return str(error) or type(error).__name__
+
+
+@contextmanager
+def exit_on_error() -> Iterator[None]:
+    """For the entry points: any error is printed to stderr and exits with code 1.
+
+    Ctrl+C exits with code 130, the shell convention for SIGINT.
+    """
+    try:
+        yield
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as error:
+        print(error_text(error), file=sys.stderr)
+        sys.exit(1)
 
 
 def use_utf8_output() -> None:

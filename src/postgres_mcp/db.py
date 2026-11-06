@@ -16,10 +16,8 @@ small next to an LLM call, and a failed connection reports its real cause (a
 wrong password, a refused port) at once instead of after a pool's wait.
 """
 
-import contextlib
 import os
 import re
-import sys
 from typing import Any
 
 import psycopg
@@ -42,38 +40,38 @@ _TRAILING_SEMICOLONS = re.compile(r";+\s*\Z")
 
 
 def connect(database_url: str | None = None) -> None:
-    """Sets where to connect.
+    """Sets where to connect; raises RuntimeError if the settings are missing or invalid.
 
     With a URL it connects there; without one, libpq reads PGHOST, PGPORT,
     PGUSER, PGPASSWORD, PGDATABASE and PGSSLMODE itself.
     """
-    global _conninfo
-    if not database_url:
-        missing = [
-            name
-            for name in ("PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE")
-            if not os.environ.get(name)
-        ]
-        if missing:
-            print(
-                f"Missing database settings: {', '.join(missing)}. "
-                f"Set them in {env_file} or pass a database URL as the first argument.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    global _conninfo, _connect_options
+    absent = [
+        name
+        for name in ("PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE")
+        if not os.environ.get(name)
+    ]
+    if not database_url and absent:
+        raise RuntimeError(
+            f"Missing database settings: {', '.join(absent)}. "
+            f"Set them in {env_file} or pass a database URL as the first argument."
+        )
     # libpq takes an empty variable (such as "PGSSLMODE=" from .env) as a value,
     # and rejects an empty sslmode; removing empty ones makes them mean "not set".
     for name in [n for n, v in os.environ.items() if n.startswith("PG") and v == ""]:
         del os.environ[name]
-    _conninfo = database_url or ""
+    conninfo = database_url or ""
     try:
-        settings = conninfo_to_dict(_conninfo)
+        settings = conninfo_to_dict(conninfo)
     except psycopg.Error as error:
-        print(f"Invalid database URL: {error}", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"Invalid database URL: {error}") from error
+    _conninfo = conninfo
     # A timeout set in the URL or in PGCONNECT_TIMEOUT wins over the default.
-    if "connect_timeout" not in settings and not os.environ.get("PGCONNECT_TIMEOUT"):
-        _connect_options["connect_timeout"] = DEFAULT_CONNECT_TIMEOUT_S
+    _connect_options = (
+        {}
+        if "connect_timeout" in settings or os.environ.get("PGCONNECT_TIMEOUT")
+        else {"connect_timeout": DEFAULT_CONNECT_TIMEOUT_S}
+    )
 
 
 async def open_connection() -> Connection:
@@ -93,15 +91,15 @@ async def run_read_only(sql: str) -> list[Row]:
     body = _TRAILING_SEMICOLONS.sub("", sql.strip()).replace("%", "%%")
     wrapped = f"SELECT * FROM (\n{body}\n) AS q LIMIT %s"
 
-    conn = await open_connection()
-    try:
-        await conn.execute("BEGIN TRANSACTION READ ONLY")
-        # SET cannot take a bound parameter; query_timeout_ms is a validated integer.
-        await conn.execute(f"SET LOCAL statement_timeout = {query_timeout_ms}")
-        cursor = await conn.execute(wrapped, (max_rows,))
-        return await cursor.fetchall()
-    finally:
-        # A connection that cannot roll back is closed below either way.
-        with contextlib.suppress(psycopg.Error):
-            await conn.execute("ROLLBACK")
-        await conn.close()
+    # Leaving the blocks rolls the transaction back and closes the connection,
+    # whether the query succeeded or not.
+    async with await open_connection() as conn:
+        await conn.set_read_only(True)  # BEGIN READ ONLY
+        async with conn.transaction(force_rollback=True):
+            # set_config(..., true) is SET LOCAL, but takes a bound parameter.
+            await conn.execute(
+                "SELECT set_config('statement_timeout', %s, true)",
+                (str(query_timeout_ms),),
+            )
+            cursor = await conn.execute(wrapped, (max_rows,))
+            return await cursor.fetchall()

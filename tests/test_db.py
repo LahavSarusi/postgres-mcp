@@ -14,19 +14,23 @@ from postgres_mcp.output import run, to_json
 # ---------------------------------------------------------------- connect()
 
 
-def test_connect_names_missing_settings(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """connect() without a URL names the missing PG* settings and exits with code 1."""
+def test_connect_names_missing_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect() without a URL raises RuntimeError naming the missing PG* settings."""
     monkeypatch.setenv("PGUSER", "u")
     monkeypatch.setenv("PGDATABASE", "d")
-    with pytest.raises(SystemExit) as exit_info:
+    with pytest.raises(RuntimeError) as error:
         db.connect()
-    assert exit_info.value.code == 1
-    assert capsys.readouterr().err == (
+    assert str(error.value) == (
         f"Missing database settings: PGHOST, PGPASSWORD. Set them in {db.env_file} "
-        "or pass a database URL as the first argument.\n"
+        "or pass a database URL as the first argument."
     )
+
+
+def test_connect_again_drops_old_options() -> None:
+    """A second connect() does not keep the timeout default from the first one."""
+    db.connect("postgresql://h/d")
+    db.connect("postgresql://h/d?connect_timeout=3")
+    assert db._connect_options == {}
 
 
 def test_connect_with_url_needs_no_pg_settings() -> None:
@@ -73,12 +77,10 @@ def test_connect_timeout_from_url_wins() -> None:
     assert db._connect_options == {}
 
 
-def test_invalid_url_exits(capsys: pytest.CaptureFixture[str]) -> None:
-    """A URL libpq cannot parse exits with code 1 and "Invalid database URL"."""
-    with pytest.raises(SystemExit) as exit_info:
+def test_invalid_url_raises() -> None:
+    """A URL libpq cannot parse raises RuntimeError "Invalid database URL"."""
+    with pytest.raises(RuntimeError, match=r"^Invalid database URL: "):
         db.connect("postgresql://h/d?no_such_option=1")
-    assert exit_info.value.code == 1
-    assert capsys.readouterr().err.startswith("Invalid database URL: ")
 
 
 def test_open_connection_before_connect() -> None:

@@ -9,6 +9,8 @@ with the rows so a wrong answer can be traced.
 
 from dataclasses import dataclass
 
+import psycopg
+
 from postgres_mcp.db import Row, run_read_only
 from postgres_mcp.llm import generate_sql, start_conversation
 from postgres_mcp.output import error_text
@@ -26,16 +28,20 @@ async def ask(question: str) -> AskResult:
     sql = await generate_sql(messages)
     try:
         return AskResult(sql=sql, rows=await run_read_only(sql))
-    except Exception as error:
-        messages.append({"role": "assistant", "content": sql})
-        messages.append(
+    except psycopg.OperationalError:
+        # The connection failed or the query timed out: the SQL is not what is
+        # wrong, so asking the model again would only cost another call.
+        raise
+    except psycopg.DatabaseError as error:  # Postgres rejected the SQL itself
+        messages += [
+            {"role": "assistant", "content": sql},
             {
                 "role": "user",
                 "content": (
                     f"PostgreSQL rejected that query: {error_text(error)}\n"
                     "Return a corrected query."
                 ),
-            }
-        )
-    retry = await generate_sql(messages)
-    return AskResult(sql=retry, rows=await run_read_only(retry))
+            },
+        ]
+        retry = await generate_sql(messages)
+        return AskResult(sql=retry, rows=await run_read_only(retry))

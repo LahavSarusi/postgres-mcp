@@ -10,7 +10,7 @@ import sys
 
 from postgres_mcp.ask import ask
 from postgres_mcp.db import connect
-from postgres_mcp.output import error_text, run, to_json, use_utf8_output
+from postgres_mcp.output import exit_on_error, run, to_json, use_utf8_output
 
 
 def main() -> None:
@@ -20,14 +20,9 @@ def main() -> None:
         print('Usage: postgres-mcp-ask "<your question>"', file=sys.stderr)
         sys.exit(1)
 
-    connect()
-    try:
+    with exit_on_error():
+        connect()
         result = run(ask(question))
-    except KeyboardInterrupt:
-        sys.exit(130)
-    except Exception as error:
-        print(error_text(error), file=sys.stderr)
-        sys.exit(1)
     print(f"SQL:\n{result.sql}\n", file=sys.stderr)
     print(to_json(result.rows))
 
